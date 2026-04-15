@@ -57,6 +57,10 @@
      
 
      3 ОПИС ВИКОНАНОЇ РОБОТИ
+     Назва інструменту та версія: Claude (Anthropic), модель Claude Opus 4.6
+     Мета використання: для збору та систематизації інформації про архітектуру Discord з відкритих інженерних публікацій компанії, генерації структури презентації, підготовки прикладів програмного коду взаємодії з Discord Gateway API та REST API мовою TypeScript, формування концептуальних прикладів внутрішньої архітектури (Elixir GenServer, Rust NIF, CQL-схема), а також підготовки тексту доповіді українською мовою.
+     Внесок автора: автором було самостійно обрано програмну систему Discord для аналізу та визначено ключові аспекти дослідження — технологічний стек, мікросервісну архітектуру, проблеми приватності та безпеки. Інформацію з інженерного блогу Discord та сторонніх технічних джерел було верифіковано та зіставлено між собою для забезпечення достовірності. Приклади коду взаємодії з Discord API перевірено на відповідність офіційній документації Discord Developer Portal (v10). Концептуальні приклади внутрішньої архітектури (Elixir, Rust, CQL) перевірено на відповідність описам з офіційних публікацій Discord Engineering Blog. Діаграму архітектури системи було перевірено та скориговано щодо коректності потоків даних між компонентами. Текст доповіді вичитано та адаптовано під науково-технічний стиль відповідно до вимог ДСТУ 3008:2015. Відеозапис доповіді записано та озвучено автором самостійно.
+     
      3.1 Загальні відомості про систему
      Discord — комунікаційна платформа для текстового, голосового та відеозв'язку. Розроблена у 2015 році компанією Discord Inc. (Сан-Франциско, США). Спочатку орієнтована на ігрові спільноти, зараз використовується для освіти, бізнесу та відкритих проєктів. Платформа обслуговує понад 150 мільйонів активних користувачів на місяць, 19 мільйонів активних серверів щодня та понад 4 мільярди хвилин голосового зв'язку на день. Клієнтські додатки: Desktop (Electron), Mobile (React Native), Web (React).
      3.2 Технологічний стек
@@ -172,5 +176,499 @@
 Рисунок. 11 – Переваги та недоліки архітектури
 
 Рисунок. 12 – Висновки
+
+
+ДОДАТОК В
+Програмний код та запити до ШІ (Claude Opus 4.6)
+В.1 «Напиши приклад коду який відноситься до дискорд системи, а враховуючи що програмний код закритий, то можливо бери їх надаються»
+1. // ============================================================
+2. // Архітектура Discord: Приклади програмного коду
+3. // Демонстрація архітектурних принципів через публічне API
+4. // Мови: TypeScript, Elixir, CQL (Cassandra/ScyllaDB)
+5. // ============================================================
+
+
+6. // ============================================================
+7. // 1. Gateway WebSocket — підключення до Discord Gateway
+8. //    Демонструє: WebSocket-архітектуру, heartbeat-механізм,
+9. //    event-driven підхід, opcode-протокол
+10. // ============================================================
+
+11. import WebSocket from "ws";
+
+12. const DISCORD_GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
+
+13. // Opcodes Discord Gateway протоколу
+14. enum GatewayOpcode {
+15. Dispatch = 0,         // Подія від сервера
+16. Heartbeat = 1,        // Heartbeat (клієнт → сервер)
+17. Identify = 2,         // Ідентифікація при підключенні
+18. Resume = 6,           // Відновлення з'єднання
+19. Reconnect = 7,        // Сервер вимагає перепідключення
+20. InvalidSession = 9,   // Невалідна сесія
+21. Hello = 10,           // Перше повідомлення від сервера
+22. HeartbeatAck = 11,    // Підтвердження heartbeat
+23. }
+
+24. interface GatewayPayload {
+25. op: GatewayOpcode;
+26. d: unknown;
+27. s: number | null;     // Sequence number для resume
+28. t: string | null;     // Event name (тільки для op=0)
+29. }
+
+30. class DiscordGatewayClient {
+31. private ws: WebSocket | null = null;
+32. private heartbeatInterval: NodeJS.Timeout | null = null;
+33. private lastSequence: number | null = null;
+34. private token: string;
+
+35. constructor(token: string) {
+36. this.token = token;
+37. }
+
+38. connect(): void {
+39. this.ws = new WebSocket(DISCORD_GATEWAY_URL);
+
+40. this.ws.on("open", () => {
+41. console.log("[Gateway] З'єднання встановлено");
+42. });
+
+43. this.ws.on("message", (data: string) => {
+44. const payload: GatewayPayload = JSON.parse(data);
+45. this.handlePayload(payload);
+46. });
+
+47. this.ws.on("close", (code: number) => {
+48. console.log(`[Gateway] З'єднання закрито: ${code}`);
+49. this.stopHeartbeat();
+50. });
+51. }
+
+52. private handlePayload(payload: GatewayPayload): void {
+53. // Зберігаємо sequence для можливого resume
+54. if (payload.s !== null) {
+55. this.lastSequence = payload.s;
+56. }
+
+57. switch (payload.op) {
+58. case GatewayOpcode.Hello:
+59. // Перше повідомлення — починаємо heartbeat
+60. const { heartbeat_interval } = payload.d as {
+61. heartbeat_interval: number;
+62. };
+63. this.startHeartbeat(heartbeat_interval);
+64. this.identify();
+65. break;
+
+66. case GatewayOpcode.HeartbeatAck:
+67. console.log("[Gateway] Heartbeat ACK отримано");
+68. break;
+
+69. case GatewayOpcode.Dispatch:
+70. // Event-driven: обробка подій від Discord
+71. this.handleEvent(payload.t!, payload.d);
+72. break;
+
+73. case GatewayOpcode.Reconnect:
+74. console.log("[Gateway] Сервер вимагає перепідключення");
+75. this.reconnect();
+76. break;
+77. }
+78. }
+
+79. // Heartbeat — механізм підтримки з'єднання
+80. // Discord закриє WebSocket якщо не отримає heartbeat
+81. private startHeartbeat(intervalMs: number): void {
+82. this.sendHeartbeat();
+83. this.heartbeatInterval = setInterval(() => {
+84. this.sendHeartbeat();
+85. }, intervalMs);
+86. }
+
+87. private sendHeartbeat(): void {
+88. this.send({ op: GatewayOpcode.Heartbeat, d: this.lastSequence });
+89. }
+
+90. private stopHeartbeat(): void {
+91. if (this.heartbeatInterval) {
+92. clearInterval(this.heartbeatInterval);
+93. }
+94. }
+
+95. // Identify — ідентифікація бота з токеном та intents
+96. // Intents визначають які події бот отримуватиме
+97. private identify(): void {
+98. this.send({
+99. op: GatewayOpcode.Identify,
+100. d: {
+101. token: this.token,
+102. intents: 513, // GUILDS | GUILD_MESSAGES
+103. properties: {
+104. os: "linux",
+105. browser: "custom-client",
+106. device: "custom-client",
+107. },
+108. },
+109. });
+110. }
+
+111. // Event-driven обробка — кожна подія має свій тип
+112. private handleEvent(eventName: string, data: unknown): void {
+113. switch (eventName) {
+114. case "READY":
+115. console.log("[Gateway] Бот підключений та готовий");
+116. break;
+117. case "MESSAGE_CREATE":
+118. console.log("[Gateway] Нове повідомлення отримано");
+119. break;
+120. case "GUILD_CREATE":
+121. console.log("[Gateway] Інформація про сервер отримана");
+122. break;
+123. }
+124. }
+
+125. private reconnect(): void {
+126. this.ws?.close();
+127. this.connect();
+128. }
+
+129. private send(data: object): void {
+130. this.ws?.send(JSON.stringify(data));
+131. }
+132. }
+
+
+133. // ============================================================
+134. // 2. REST API — взаємодія з Discord HTTP API
+135. //    Демонструє: REST-архітектуру, rate limiting,
+136. //    CRUD-операції на ресурсах Discord
+137. // ============================================================
+
+138. const DISCORD_API_BASE = "https://discord.com/api/v10";
+
+139. interface DiscordMessage {
+140. id: string;
+141. channel_id: string;
+142. author: { id: string; username: string };
+143. content: string;
+144. timestamp: string;
+145. }
+
+146. interface DiscordChannel {
+147. id: string;
+148. name: string;
+149. type: number;
+150. guild_id: string;
+151. }
+
+152. class DiscordRestClient {
+153. private token: string;
+
+154. constructor(token: string) {
+155. this.token = token;
+156. }
+
+157. // Базовий HTTP-запит з обробкою Rate Limiting
+158. // Discord обмежує кількість запитів (429 Too Many Requests)
+159. private async request<T>(
+160. method: string,
+161. endpoint: string,
+162. body?: object
+163. ): Promise<T> {
+164. const response = await fetch(`${DISCORD_API_BASE}${endpoint}`, {
+165. method,
+166. headers: {
+167. Authorization: `Bot ${this.token}`,
+168. "Content-Type": "application/json",
+169. },
+170. body: body ? JSON.stringify(body) : undefined,
+171. });
+
+172. // Rate Limit — архітектурне рішення Discord
+173. // для захисту від перевантаження
+174. if (response.status === 429) {
+175. const retryAfter = response.headers.get("Retry-After");
+176. console.log(`[Rate Limit] Очікування ${retryAfter}с`);
+177. await new Promise((r) =>
+178. setTimeout(r, Number(retryAfter) * 1000)
+179. );
+180. return this.request<T>(method, endpoint, body);
+181. }
+
+182. return response.json() as Promise<T>;
+183. }
+
+184. // Отримання повідомлень каналу
+185. async getMessages(
+186. channelId: string,
+187. limit: number = 50
+188. ): Promise<DiscordMessage[]> {
+189. return this.request<DiscordMessage[]>(
+190. "GET",
+191. `/channels/${channelId}/messages?limit=${limit}`
+192. );
+193. }
+
+194. // Надсилання повідомлення
+195. async sendMessage(
+196. channelId: string,
+197. content: string
+198. ): Promise<DiscordMessage> {
+199. return this.request<DiscordMessage>(
+200. "POST",
+201. `/channels/${channelId}/messages`,
+202. { content }
+203. );
+204. }
+
+205. // Отримання каналів серверу (guild)
+206. async getGuildChannels(
+207. guildId: string
+208. ): Promise<DiscordChannel[]> {
+209. return this.request<DiscordChannel[]>(
+210. "GET",
+211. `/guilds/${guildId}/channels`
+212. );
+213. }
+214. }
+
+
+215. // ============================================================
+216. // 3. Discord Bot з обробкою подій
+217. //    Демонструє: event-driven архітектуру, інтеграцію
+218. //    Gateway (WebSocket) + REST API
+219. // ============================================================
+
+220. class SimpleDiscordBot {
+221. private gateway: DiscordGatewayClient;
+222. private rest: DiscordRestClient;
+
+223. constructor(token: string) {
+224. this.gateway = new DiscordGatewayClient(token);
+225. this.rest = new DiscordRestClient(token);
+226. }
+
+227. // Точка входу — підключення до Gateway
+228. start(): void {
+229. console.log("[Bot] Запуск...");
+230. this.gateway.connect();
+231. }
+
+232. // Обробка вхідного повідомлення
+233. // Gateway отримує подію → REST API відправляє відповідь
+234. async onMessageCreate(message: DiscordMessage): Promise<void> {
+235. if (message.content === "!ping") {
+236. await this.rest.sendMessage(
+237. message.channel_id,
+238. "Pong! Затримка Gateway: <X>мс"
+239. );
+240. }
+
+241. if (message.content === "!архітектура") {
+242. await this.rest.sendMessage(
+243. message.channel_id,
+244. [
+245. "**Архітектура Discord:**",
+246. "• Gateway: Elixir + BEAM VM (WebSocket)",
+247. "• API: Python (Django REST)",
+248. "• Voice: Rust + WebRTC",
+249. "• DB: ScyllaDB + PostgreSQL + Redis",
+250. ].join("\n")
+251. );
+252. }
+253. }
+254. }
+
+
+255. // ============================================================
+256. // 4. Elixir: GenServer для Guild (концептуальний приклад)
+257. //    Демонструє: як Discord внутрішньо реалізує
+258. //    кожен сервер як окремий процес на BEAM VM
+259. // ============================================================
+
+260. /*
+261. # Кожен guild (сервер Discord) — окремий GenServer процес
+262. # Це забезпечує ізоляцію та відмовостійкість
+
+263. defmodule Discord.GuildServer do
+264. use GenServer
+
+265. # Стан guild: учасники, канали, ролі
+266. defstruct [:id, :name, members: %{}, channels: []]
+
+267. # Ініціалізація при створенні/завантаженні серверу
+268. def init(guild_id) do
+269. state = load_guild_from_db(guild_id)
+270. {:ok, state}
+271. end
+
+272. # Обробка нового повідомлення — fan-out всім підписникам
+273. def handle_cast({:message, channel_id, msg}, state) do
+274. subscribers = get_channel_subscribers(state, channel_id)
+
+275. Enum.each(subscribers, fn pid ->
+276. send(pid, {:new_message, channel_id, msg})
+277. end)
+
+278. {:noreply, state}
+279. end
+
+280. # Користувач приєднується до серверу
+281. def handle_cast({:member_join, user_id, pid}, state) do
+282. new_members = Map.put(state.members, user_id, pid)
+283. {:noreply, %{state | members: new_members}}
+284. end
+
+285. # Користувач виходить з серверу
+286. def handle_cast({:member_leave, user_id}, state) do
+287. new_members = Map.delete(state.members, user_id)
+288. {:noreply, %{state | members: new_members}}
+289. end
+
+290. # Отримання кількості онлайн-учасників
+291. def handle_call(:member_count, _from, state) do
+292. {:reply, map_size(state.members), state}
+293. end
+294. end
+
+295. # Supervisor — автоматичний перезапуск при збоях
+296. defmodule Discord.GuildSupervisor do
+297. use DynamicSupervisor
+
+298. def start_guild(guild_id) do
+299. DynamicSupervisor.start_child(
+300. __MODULE__,
+301. {Discord.GuildServer, guild_id}
+302. )
+303. end
+304. end
+305. */
+
+
+306. // ============================================================
+307. // 5. CQL: Схема зберігання повідомлень (ScyllaDB)
+308. //    Демонструє: партиціювання за channel_id + bucket,
+309. //    оптимізацію для читання останніх повідомлень
+310. // ============================================================
+
+311. /*
+312. -- Таблиця повідомлень Discord
+313. -- Партиціювання: (channel_id, bucket) — розподіл даних
+314. -- Кластеризація: message_id DESC — останні повідомлення першими
+315. -- Bucket — часове вікно (наприклад, 10 днів)
+
+316. CREATE TABLE discord.messages (
+317. channel_id  bigint,
+318. bucket      int,
+319. message_id  bigint,
+320. author_id   bigint,
+321. content     text,
+322. timestamp   timestamp,
+323. edited_at   timestamp,
+324. attachments list<text>,
+325. embeds      list<text>,
+326. PRIMARY KEY ((channel_id, bucket), message_id)
+327. ) WITH CLUSTERING ORDER BY (message_id DESC)
+328. AND compaction = {
+329. 'class': 'TimeWindowCompactionStrategy',
+330. 'compaction_window_size': 7,
+331. 'compaction_window_unit': 'DAYS'
+332. }
+333. AND gc_grace_seconds = 864000;
+
+* Запит: отримати останні 50 повідомлень каналу
+334. SELECT * FROM discord.messages
+335. WHERE channel_id = 123456789
+336. AND bucket = 2025042
+337. ORDER BY message_id DESC
+338. LIMIT 50;
+
+* Bucket обчислюється як: (timestamp / bucket_size)
+* Це обмежує розмір партиції та запобігає "hot partitions"
+339. */
+
+
+340. // ============================================================
+341. // 6. Rust NIF: SortedSet для списків учасників
+342. //    Демонструє: інтеграцію Rust з Elixir через NIF
+343. //    для критичних за продуктивністю операцій
+344. // ============================================================
+
+345. /*
+346. // Rust: Структура SortedSet для зберігання учасників
+347. // Використовується у Discord для member list кожного guild
+348. // Забезпечує O(log n) вставку та видалення
+
+349. use rustler::{Encoder, Env, NifResult, Term};
+
+350. struct SortedSet {
+351. buckets: Vec<Vec<Term>>,
+352. bucket_size: usize,
+353. }
+
+354. impl SortedSet {
+355. fn new(bucket_size: usize) -> Self {
+356. SortedSet {
+357. buckets: Vec::new(),
+358. bucket_size,
+359. }
+360. }
+
+361. // Додавання елементу — знаходить потрібний bucket,
+362. // виконує binary search всередині
+363. fn add(&mut self, term: Term) -> bool {
+364. let bucket_idx = self.find_bucket(&term);
+365. let bucket = &mut self.buckets[bucket_idx];
+
+366. match bucket.binary_search(&term) {
+367. Ok(_) => false,  // Елемент вже існує
+368. Err(pos) => {
+369. bucket.insert(pos, term);
+370. // Розділяємо bucket якщо він переповнений
+371. if bucket.len() > self.bucket_size * 2 {
+372. self.split_bucket(bucket_idx);
+373. }
+374. true
+375. }
+376. }
+377. }
+
+378. // Видалення елементу
+379. fn remove(&mut self, term: &Term) -> bool {
+380. let bucket_idx = self.find_bucket(term);
+381. let bucket = &mut self.buckets[bucket_idx];
+
+382. match bucket.binary_search(term) {
+383. Ok(pos) => {
+384. bucket.remove(pos);
+385. true
+386. }
+387. Err(_) => false,
+388. }
+389. }
+390. }
+
+391. // NIF-функції, доступні з Elixir
+392. #[rustler::nif]
+393. fn sorted_set_new(bucket_size: usize) -> SortedSet {
+394. SortedSet::new(bucket_size)
+395. }
+
+396. #[rustler::nif]
+397. fn sorted_set_add(set: &mut SortedSet, term: Term)
+⇒ bool {
+398. set.add(term)
+399. }
+400. */
+
+
+401. // ============================================================
+402. // Точка входу — запуск бота
+403. // ============================================================
+
+404. const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "YOUR_TOKEN";
+405. const bot = new SimpleDiscordBot(BOT_TOKEN);
+406. bot.start();
 
 
